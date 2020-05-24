@@ -1,0 +1,422 @@
+---
+title: "Actividad03"
+author: "Yangyang Li"
+date: "3/4/2019"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+    toc: yes
+    number_sections: yes
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+library(nnet)
+library(rminer)
+library(caret)
+library(pROC)
+library(plotly)
+library(e1071)
+library(FSelector)
+library(rpart)
+library(ggpubr)
+library(gridExtra)
+library(caret)
+library(rminer)
+library(rpart.plot)
+```
+#Machine learning models and feature selection
+##Estudiar funcionamiento de Artificial Neural Network, Support Vector Machine, Decision Tree y ajuste de sus parámetros.
+
+En este apartado vamos a estudiar los comportamientos de cada modelo bajo diferentes parámetros, por eso vamos a fijamos tres variables, un training set y un test set.
+
+###Cargar de datos y fijar modelo:
+```{r,warning=FALSE}
+data<-read.table(file="/Users/yangyangli/Downloads/datos_icb.txt",sep=" ", dec=".", header=TRUE)
+variables <- c("tam","gang","grado")
+formula <- as.formula( paste("(recid=='SI')*1.0",paste(variables,collapse = "+"),sep = "~") )
+index <- holdout(ratio=0.75,data$recid,mode = "stratified")
+d.train <- data[index$tr,]
+d.test  <- data[index$ts,]
+```
+###Neural Network
+####Size
+Número de neuronas en la capa oculta depende de:<br>
+-Los números de unidades de entrada y salida.<br>
+-La complejidad de la función o clasificación a aprender.<br>
+-El algoritmo de entrenamiento,etc <br>
+Con muy pocas unidades ocultas, obtendríamos alto error de entrenamiento, si usamos demasiadas unidades ocultas, puede obtener un error de entrenamiento bajo, pero obtendremos un alto error de generalización debido al sobreajuste y alta variación.<br>
+A continuación se muestra los valores de auc bajo diferentes número de neuronas:
+```{r,warning=FALSE}
+  size=seq(1,10,by=1)
+   auc.size<-sapply(size, function(x){
+    set.seed(6)
+    modelo2 <-  nnet(formula,data=d.train,size=x,maxit=1000, decay=4e-05,trace=FALSE)
+    predict.test <- predict(modelo2,d.test,type="raw")
+    auc(d.test$recid,predict.test)[1]
+  })
+  ggplot(data = as.data.frame(auc.size), mapping = aes(y = auc.size, x = size)) + geom_point(color="blue")
+```
+
+Como se muestra en la figura, podemos ver que alto número de neuronas causan una disminución en el auc generalizado, lo que significa que se ha producido overfitting.<br>
+
+####decay
+Weight decay. Default 0.<br>
+El weight decay también se conoce como regularización de L2, para reducir los pesos y evitar el problema de overfitting. Cuando se reduce el weight, toda la red neuronal es menos sensible al ruido en la entrada, pero cuando el weight es demasiado grande, un peque??o cambio en su entrada podrá cambiar significativamente la salida.<br>
+La siguiente fórmula explica el origen de **weight decay**: <br>
+Regularización de L2: $$C=C_0+\frac{\lambda}{2n}\sum{\omega^2}$$ (C es cost function)<br>
+Derivación:$$\frac{\partial C }{\partial w}=\frac{\partial C_0 }{\partial w}+\frac{\lambda}{n}w$$ <br>
+Efecto al weight:
+$$ w\rightarrow w-\eta\frac{\partial C_0 }{\partial w}-\eta\frac{\lambda }{n}w=(1-\eta\frac{\lambda }{n})w-\eta \frac{\partial C_0 }{\partial w}$$ <br>
+Factor de weight decay:
+$$(1-\eta \frac{\lambda }{n})$$
+A continuación vamos a ajustar el modelo con diferentes valores de decay para ver su comportamiento.
+```{r,warning=FALSE}
+  decay1=seq(0,6e-05,by=5e-06)
+  auc.decay1<-sapply(decay1, function(x){
+    set.seed(5)
+    modelo1 <-  nnet(formula,data=d.train,size=3,maxit=1000, decay=x,trace=FALSE)
+    predict.test <- predict(modelo1,d.test,type="raw")
+    auc(d.test$recid,predict.test)[1]
+  })
+  decay2 <- seq(0,6,by=1)
+  auc.decay2<-sapply(decay2, function(x){
+    set.seed(5)
+    modelo1 <-  nnet(formula,data=d.train,size=3,maxit=1000, decay=x,trace=FALSE)
+    predict.test <- predict(modelo1,d.test,type="raw")
+    auc(d.test$recid,predict.test)[1]
+  })
+ p1 <- ggplot(data = as.data.frame(auc.decay1), mapping = aes(y = auc.decay1, x = decay1)) +geom_point(color="blue")
+ p2 <- ggplot(data = as.data.frame(auc.decay2), mapping = aes(y = auc.decay2, x = decay2)) + geom_point(color="blue")
+grid.arrange(p1,p2)
+```
+
+Encontramos que cuando la decay es demasiado alta, aumentará el valor de cost function,la atenuación de los pesos es mayor, lo que hace que el modelo menos eficaz. Por tanto, el decay deberia ser un número muy chico. Además, cuando el decay=0, obtenemos muy mal resultado en generalización. (auc=0.5).
+
+####Mejor combinación de parámetros:
+```{r,warning=FALSE}
+parameter.nnet <- function(d.train,d.test,variables){
+  formula <- as.formula(paste("(recid=='SI')*1.0",paste(variables,collapse = "+"),sep = "~") )
+       m <- expand.grid(size=seq(1,6,by=1),decay=seq(0,6e-05,by=1e-05))
+       auc <- vector()
+       for (i in 1:dim(m)[1]) {
+        set.seed(5)
+        modelo <-  nnet(formula,data=d.train,size=m$size[i],maxit=500, decay=m$decay[i],trace=FALSE)
+        predict.test <- predict(modelo,d.test,type="raw")
+        auc.test <- auc(d.test$recid,predict.test)[1]
+        auc <- append(auc,auc.test)
+       } 
+       m$auc <- auc
+  return(m)
+}
+p.nnet <- parameter.nnet(d.train,d.test,variables )
+#mejor parametros en este caso:
+p.nnet[which.max(p.nnet$auc),]
+```
+#####Visualización 3d
+```{r,warning=FALSE}
+plot_ly(p.nnet, z = ~auc, y = ~size, x = ~decay)
+```
+
+###Support Vector Machine
+####cost
+El cost es el factor de penalización, es decir la tolerancia para el error. Cuando mayor es la cost, menor es la tolerancia para el error, pero puede causar overfitting.El valor del cost influye la capacidad de generalización.
+```{r,warning=FALSE}
+  cost=seq(100,1000,by=50)
+  auc.cost<-sapply(cost, function(x){
+      modelo3 <-  svm(formula,data=d.train,cost=x,probability=TRUE,gamma=0.001)
+      predict.test <- predict(modelo3,d.test,probability=TRUE)
+      auc.test <- auc(d.test$recid,predict.test)
+  })
+ggplot(data = as.data.frame(auc.cost), mapping = aes(y = auc.cost, x = cost)) + geom_point(color="blue")
+```
+
+####gamma
+Gamma es un parámetro de la función kernel. El valor predeterminado es 1 / n_features.
+Cuando más grande el gamma, menos vectores de soporte, menor el valor gamma y más vectores de soporte. El número de vectores de soporte afecta a la velocidad de entrenamiento y predicción.
+```{r,warning=FALSE}
+  gamma=10^(-6:1)
+   auc.gamma<-sapply(gamma, function(x){
+     modelo4 <-  svm(formula,data=d.train,cost=100,gamma=x,probability=TRUE)
+     predict.test <- predict(modelo4,d.test,probability=TRUE)
+     auc.test <- auc(d.test$recid,predict.test)
+  })
+   p1 <- ggplot(data = as.data.frame(auc.gamma), mapping = aes(y = auc.gamma, x = gamma)) + geom_point(color="blue")
+   p2 <- ggplot(data = as.data.frame(auc.gamma), mapping = aes(y = auc.gamma, x = gamma)) + geom_point(color="blue")+ scale_x_continuous(limits = c(10^-6,10^-5)) 
+  grid.arrange(p1,p2)
+
+```
+
+La primera imagen indica que el mejor gamma está cerca de 0, la segunda imagen corresponde al área que está muy cerca a 0 de la primera imagen con zoom ampliado.
+
+####Mejor combinación de parametros
+```{r,warning=FALSE}
+parameter.svm <- function(d.train,d.test,variables){
+       m <- expand.grid(cost=seq(100,800,by=100),gamma=10^(-6:-1))
+       formula <- as.formula( paste("(recid=='SI')*1.0",paste(variables,collapse = "+")
+                                 ,sep = "~") )
+      auc <- vector()
+      for (i in 1:dim(m)[1]) {
+        modelo <-  svm(formula,data=d.train,cost=m$cost[i],gamma=m$gamma[i],probability=TRUE)
+        predict.test <- predict(modelo,d.test,probability=TRUE)
+        auc.test <- auc(d.test$recid,predict.test)[1]
+        auc <- append(auc,auc.test)
+      }
+   m$auc <- auc
+  return(m )
+}
+p.svm <- parameter.svm(d.train,d.test,variables)
+p.svm <- p.svm[order(-p.svm$auc),]
+head(p.svm)
+```
+#####Visualización 3d
+```{r,warning=FALSE}
+plot_ly(p.svm, z = ~auc, x = ~cost, y = ~gamma)
+```
+
+A partir de los resultados obtenidos anteriormente, encontramos que el comportamiento del modelo es muy sensible al parámetro gamma, gamma desempe??a un papel principal, y cuanto menor es el valor de gamma, mayor es la influencia en el modelo. Gamma es crítico para la capacidad de generalización del modelo.
+
+####tune.svm()
+Otro método para buscar mejor parámetros de svm. El paquete **e1071** también ofrece una función para ajustar parametros de svm.
+```{r,warning=FALSE}
+tuned <- tune.svm(formula, data = data, gamma = 10^(-6:-1), cost = seq(100,700,by=100))
+tuned$best.model
+```
+#####Calcular el auc con los parametros obtenidos desde **tune.svm**:
+```{r,warning=FALSE}
+mod <-  svm(formula,data=d.train,cost=tuned$best.parameters$cost,gamma=tuned$best.parameters$gamma,probability=TRUE)
+pred <- predict(mod,d.test,probability=TRUE)
+auc(d.test$recid,pred)
+```
+
+Comparamos los resultados obtenidos desde la función **parameter.svm** y la función **tune.svm**, la función **parameter.svm** nos devuelven parámetros más adecuados.
+
+###Decision Tree
+####control: cp(complexity pamemeter)
+El parámetro cp define la profundidad del árbol, cuando más peque??o el cp, más nodos tendrá el árbol.
+A condinuación vamos a dibujar los árboles con diferentes valores de cp y calculamos su AUC.
+```{r,warning=FALSE}
+cp=c(0.5,0.05,0.005,0.0005)
+  for (i in 1:length(cp)) {
+  dt.fit <- rpart(recid ~ tam + gang + grado,data=d.train,control=rpart.control(cp=cp[i]))
+    dt.pred <- predict(dt.fit,d.test,type="prob")[,"SI"]
+    auc <-round(auc(d.test$recid,dt.pred),3)
+    #cuardar el auc y el parametro en el label
+    label <- paste("AUC y cp:",auc,cp[i],sep = "_")
+    rpart.plot(dt.fit, branch=1, branch.type=2, type=1, extra=102,
+             shadow.col="gray", box.col="green",
+             border.col="blue", split.col="red",
+             split.cex=1.2, main=label)
+  }
+```
+
+Desde las imagens de arriba, afirmamos el valor de cp corresponde al profundidad del árbol, tambien encontramos cuando el cp llega un valor suficiente menor, el árbol llegara un estado estable, por tanto el auc se queda igual.
+
+####Mejor parametro dtree
+```{r,warning=FALSE}
+parameter.dt <- function(d.train,d.test,variables){
+      cp <- c(0.05,0.005,0.0005,0.00005)
+      formula <- as.formula( paste("recid",paste(variables,collapse = "+")
+                                 ,sep = "~") )
+      auc <- vector()
+      for (i in 1:4) {
+        dt.fit <- rpart(formula,data=d.train,control=rpart.control(cp=cp[i]))
+        dt.pred <- predict(dt.fit,d.test,type="prob")[,"SI"]
+        auc.test <- auc(d.test$recid,dt.pred)[1]
+        auc <- append(auc,auc.test)
+      }
+      r <- cbind(cp,auc)
+  return( as.data.frame(r) )
+}
+p.dt <- parameter.dt(d.train,d.test,variables)
+p.dt[order(-p.dt$auc),][1,]
+```
+
+##Selección de variables
+###Función necesario para calcular AUC (para uso posterior) 
+```{r,warning=FALSE}
+estimaMetrica <- function(d.train,d.test,variables,modelo,parameters){
+  formula <- as.formula(paste("(recid=='SI')*1.0",paste(variables,collapse = "+"),sep = "~") )
+      if(modelo=="nnet"){
+        modelo <- nnet(formula,data = d.train,size=parameters$size,maxit=1000,decay=parameters$decay,trace=FALSE)
+        predict.test <- predict(modelo,d.test,type="raw")
+        auc.test <- auc(d.test$recid,predict.test)
+      } 
+      if(modelo=="svm"){
+        modelo <-  svm(formula,data=d.train,size=parameters$cost,gamma=parameters$gamma,probability=TRUE)
+        predict.test <- predict(modelo,d.test,probability=TRUE)
+        auc.test <- auc(d.test$recid,predict.test)
+      } 
+      if(modelo=="dt"){
+        formula.dt <-  formula <- as.formula(paste("recid",paste(variables,collapse = "+"),sep = "~") )
+        dt.fit <- rpart(recid~., data=d.train, control=rpart.control(cp=parameters$cp))
+        dt.pred <- predict(dt.fit,d.test,type="prob")[,"SI"]
+        auc.test <- auc(d.test$recid,dt.pred)
+      }
+     if(modelo=="glm"){
+        modelo <- glm(formula,data=d.train,family = binomial("logit"))
+        predict.test <- predict(modelo,d.test,type="response")
+        auc.test <- auc(d.test$recid,predict.test)
+        }
+      return(auc.test)
+}
+```
+###Método de filtrado
+Este método calcula la relevancia entre cada atributo y la clase. La puntuación más alta indica que la relación es más fuerte. Finalmente, todas los atributos se ordenan según la puntuación, y se selecciona los atributos con la puntuación más alta.
+Un método típico de filtro es la **information.gain**. Se selecciona los atributos calculando su information.gain.<br>
+En la siguiente función, dividimos el conjunto de datos en dos partes: test y training, pero el training set se divide en dos partes también: training y validacion. El conjunto de validacion es para seleccionar atributos(infomation.gain) y ajustar parámetros, depues se entrena el modelo con el training set, al final se estima la capacidad de generalización con el conjunto de test, este proceso se hace 10 veces (10_kfold) para obtener la media. 
+```{r,warning=FALSE}
+Filter.k_fold <- function(data,modelo){
+  k=seq(1,10,by=1)
+ folds <- createFolds(data$recid,k=10)
+ ls <- vector()
+  for (i in 1:10) {
+   d.test <- data[folds[[i]],]
+    ks <- k[-i]
+        auc <- lapply(ks, function(x){
+            d.validacion <- data[folds[[x]],]
+            d.train <- data[-c(folds[[x]],folds[[i]]),]
+            #seleccion de variables
+            variable <- cutoff.biggest.diff(information.gain(recid~.,d.validacion))
+            
+              if(modelo=="nnet"){
+                #ajustar parametros con el conjunto de validacion
+                 parameter <- parameter.nnet(d.train,d.validacion,variable)
+                 #mejor parametros
+                 best.pt <- parameter[which.max(parameter$auc),]
+                 #se estrena con el d.train y calcular auc con el d.test
+                 result <- estimaMetrica(d.train,d.test,variable,"nnet",best.pt)
+              }
+              if(modelo=="svm"){
+                 parameter <- parameter.svm(d.train,d.validacion,variable)
+                 best.pt <- parameter[which.max(parameter$auc),]
+                 result <- estimaMetrica(d.train,d.test,variable,"svm",best.pt)
+              }
+              if(modelo=="dt"){
+                best.result <- vector()
+                parameter <- parameter.dt(d.train,d.validacion,variable)
+                best.pt <-  parameter[which.max(parameter$auc),]
+                result <- estimaMetrica(d.train,d.test,variable,"dt",best.pt)
+              }
+              if(modelo=="glm"){
+                result <- estimaMetrica(d.train,d.test,variable,"glm")
+              }
+              metrica <- result
+            })
+    ls <- cbind(ls,auc)
+  }
+    return(round(mean(as.numeric(ls)),3))
+}
+```
+####Resultados:
+```{r,warning=FALSE}
+start.Filter <- Sys.time()
+filter.nnet <- Filter.k_fold(data,"nnet")
+end.Filter <- Sys.time()
+filter.svm <- Filter.k_fold(data,"svm")
+filter.dt <- Filter.k_fold(data,"dt")
+filter.glm <- Filter.k_fold(data,"glm")
+
+rbind(c("nnet","svm","dt","glm"),c(filter.nnet,filter.svm,filter.dt,filter.glm))
+```
+
+Desde los resultados obtenidos,los auc obtenidos de todos los modelos son bajas, tambien hemos observado que el nnet y svm funciona poco mejor que dtree. Como se puede ver anteriormente, la selección de variables con filtro solo requiere estadísticas simples y baja complejidad computacional. Sin embargo, el problema con este método es que no considera la relación de combinación entre las variables. Es posible que la capacidad de clasificación de un modelo sea baja.<br>
+Entoces vamos a introducir otro método de selección de variables : **wrapper**
+
+###Método wrapper
+La idea del método de clase Wrapper es enumerar todas las situaciones posibles y elegir la mejor combinación de atributos.<br>
+Para poder usar la función forward.search del paquete Fselector, tenemos que implementar una función que toma como primer parámetro un vector de caracteres de todos los atributos y devuelve un número que indica qué tan importante es un subconjunto dado. 
+
+#### Implementación de **eval.fun** para el forward.search(attributes, eval.fun)
+Vamos a implementar 3 funciones para nnet, svm y dtree, todos tienen la misma forma en dividir el conjunto de datos como anterior: un conjunto para test, uno para training, y el training se divide en validación y entrenamiento:
+```{r,warning=FALSE}
+wraper.k_fold.nnet <- function(subset){
+   k=seq(1,10,by=1)
+ folds <- createFolds(data$recid,k=10)
+ df <- vector()
+  for (i in 1:10) {
+   d.test <- data[folds[[i]],]
+    ks <- k[-i]
+        auc <- lapply(ks, function(x){
+        d.validacion <- data[folds[[x]],]
+        d.train <- data[-c(folds[[x]],folds[[i]]),]
+         parameter <- parameter.nnet(d.train,d.validacion,subset)
+         best.pt <- parameter[which.max(parameter$auc),]
+         result <- estimaMetrica(d.train,d.test,subset,"nnet",best.pt)
+      })
+            df <- as.numeric( cbind(df,auc))
+          }
+    return(mean(df))
+}
+
+wraper.k_fold.svm <- function(subset){
+   k=seq(1,10,by=1)
+ folds <- createFolds(data$recid,k=10)
+ df <- vector()
+  for (i in 1:10) {
+   d.test <- data[folds[[i]],]
+    ks <- k[-i]
+        auc <- lapply(ks, function(x){
+        d.validacion <- data[folds[[x]],]
+        d.train <- data[-c(folds[[x]],folds[[i]]),]
+         parameter <- parameter.svm(d.train,d.validacion,subset)
+         best.pt <- parameter[which.max(parameter$auc),]
+         result <- estimaMetrica(d.train,d.test,subset,"svm",best.pt)
+      })
+            df <- as.numeric( cbind(df,auc))
+          }
+    return(mean(df))
+}
+
+wraper.k_fold.dt <- function(subset){
+   k=seq(1,10,by=1)
+ folds <- createFolds(data$recid,k=10)
+ df <- vector()
+  for (i in 1:10) {
+   d.test <- data[folds[[i]],]
+    ks <- k[-i]
+        auc <- lapply(ks, function(x){
+        d.validacion <- data[folds[[x]],]
+        d.train <- data[-c(folds[[x]],folds[[i]]),]
+         parameter <- parameter.dt(d.train,d.validacion,subset)
+         best.pt <- parameter[which.max(parameter$auc),]
+         result <- estimaMetrica(d.train,d.test,subset,"dt",best.pt)
+      })
+            df <- as.numeric( cbind(df,auc))
+          }
+    return(mean(df))
+}
+```
+####forward.search(attributes, eval.fun)
+```{r,warning=FALSE}
+start.wrapper <- Sys.time()
+subset.nnet <- forward.search(names(data)[-c(1,8)],wraper.k_fold.nnet)
+end.wrapper<- Sys.time()
+subset.svm <- forward.search(names(data)[-c(1,8)],wraper.k_fold.svm)
+subset.dt <- forward.search(names(data)[-c(1,8)],wraper.k_fold.dt)
+```
+####resultados:
+```{r}
+subset.nnet
+subset.svm
+subset.dt
+```
+
+####Tiempo ejecución de filter y wrapper:
+Aunque el mejor modelo se puede encontrar mediante el metodo de wrapper, ya que cada combinación de atributos debe ser entrenada una vez, el costo es muy grande, y si la cantidad de atributos es muy grande,este método obviamente no es operable.<br>
+Además, dado que el proceso de buscar mejor parametros se agrega a cada entrenamiento en el k.fold, esta es una de las razones para consumir mucho tiempo.
+```{r}
+#time.taken.filter
+end.Filter - start.Filter
+#time.taken.wrapper
+end.wrapper - start.wrapper
+```
+
+

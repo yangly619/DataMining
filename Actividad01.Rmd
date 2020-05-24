@@ -1,0 +1,365 @@
+---
+title: "Actividad01"
+author: "Yangyang Li"
+date: "21/2/2019"
+output: 
+  html_document: 
+    theme: cerulean
+    toc: yes
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE)
+```
+#Statistical analysis and LR modelling
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+library(rpart)
+library(hier.part)
+library(MASS)
+library(ggplot2)
+library(RColorBrewer)
+library("plyr") 
+library(plotrix)
+library(DT)
+library(kableExtra)
+library(dplyr)
+library(ggthemes)
+```
+
+##Cargar de datos
+```{r}
+data<-read.table(file="/Users/yangyangli/Downloads/datos_icb.txt",sep=" ", dec=".", header=TRUE)
+head(data)
+summary(data)
+```
+
+Hemos cuardado el conjunto de datos en la variable "data", y utilizamos el comando **summary()** podemos obtener una vision global sobre los datos: tiene 8 variables y no tiene datos perdidos("NA"). De los 8 variables, edad,tam(tumor size),gang(numero de ganglios) son variables numericas y restos son de tipo categoricas.
+
+##Analisis univariante
+###Variables numericas
+####Edad
+```{r}
+summary(data$edad)
+hist(data$edad,freq = FALSE,col="light blue",main = "Age distribution",xlab = "Edad")
+x<-seq(min(data$edad),max(data$edad),length=40)
+y<-dnorm(x,mean(data$edad),sd(data$edad))
+lines(x,y,col="red")
+lines(density(data$edad),col="blue")
+
+```
+
+El summary() nos devuelve una descripcion basica sobre la "edad", la media, mediana,minimo,maximo etc.
+La histograma nos da una sensacion de que la edad parece tiene una distribucion normal, para comprobar si es verdad, usamos:
+"Shapiro-Wilk normality test"
+```{r}
+#averiguar el hipostesis nulo
+n <- rnorm(1000)
+shapiro.test(n)
+```
+
+Para un conjunto de numero con distribucion normal, el p_valor =0.6 >0.05, es decir , el hipotesis nulo es "es normalizada"
+```{r}
+shapiro.test(data$edad)
+```
+
+El variable edad **no** tiene la distribucion normal ya que su p_valor es mucho menor que 0.05, rechaza el hipotesis nulo.
+
+Tambien es interesante categorizar la edad porque no va haber mucha variacion entre casos con edades muy similares.
+```{r}
+data$edad_cat <- cut(data$edad,breaks=c(min(data$edad)-1,45,65,max(data$edad)))
+table(data$edad_cat)
+```
+####Numero de ganglios
+```{r}
+summary(data$gang)
+ggplot(data = data, mapping = aes(x = gang)) +
+  geom_histogram(color="blue", fill="blue", bins = 20)+labs(title = "Numero de ganglios")+geom_text( stat = "count",  aes(label = ..count..), vjust = -0.25)
+```
+
+Podemos obeservar mayor parte de los pacientes no tiene numero de ganglios elevado,entre 0-3.
+
+####Tumor size
+```{r}
+summary(data$tam)
+ggplot(data = data, mapping = aes(x = tam)) +
+  geom_histogram(color="blue", fill="blue", bins = 20)+labs(title = "Tumor size")
+```
+
+Mayor parte de los pacientes tiene su tumor size entre 0 a 3 $cm^3$.
+
+###Variables categoricas
+####Fenotipo
+Fenotipo tiene 6 niveles:
+```{r}
+levels(data$feno)
+p <- ggplot(data , mapping = aes(x = data$feno)) + geom_bar(col="#802A2A",fill="#802A2A")
+p + labs(title = "Fenotipos BRCA",x = "Tipos de cancer",y = "Count"
+)+geom_text( stat = "count", aes(label = ..count..),vjust = -0.25
+)
+```
+
+Como demostrada de la grafica, la "luminalA" es un tipo mas comun en la muestra y "Luminal-HER2" , "TN no-basal" son tipos escasas.
+
+####Grado
+```{r}
+grados <- table(data$grado)
+label = c("G1","G2","G3")
+piepercent<-round(100*grados/sum(grados), 1)
+piepercent <-paste(piepercent, "%", sep = "")
+pie3D(grados,labels=paste(label, piepercent,sep = "   "),explode=0,main="Grados de cancer")
+```
+
+Observamos hay 55.8% de los casos pertenecen al grado2.
+
+####Quimioterapia y Hormonoterapia
+Como son dos variables de tipo logical,y ambos son tratamientos, vamos a  plot ambas en una grafica:
+```{r}
+t1 <- as.data.frame(table(data$quim))
+t2 <- as.data.frame(table(data$horm))
+t <- rbind(t1,t2)
+colnames(t) <-c("valor","count") 
+t$tratamiento <- c("quimio","quimio","horm","horm")
+ggplot(t, aes(x =valor, y = count, fill = tratamiento)) +
+  geom_bar(position = "dodge", stat = "identity")+geom_text(aes(label = count), vjust = 1.5, colour = "white", position = position_dodge(.9), size = 5)
+```
+
+####Recid
+```{r}
+p <- ggplot(data , mapping = aes(x = data$recid)) + geom_bar(col=" blue",fill="blue")
+p + labs(title = "Recidiva",x = "valor",y = "Count"
+)+geom_text( stat = "count", aes(label = ..count..),vjust = -0.25
+)
+```
+
+##Analisis bivariante
+###MatrixBivariantes
+Construimos una matriz para ver si existe relacion entre las variables (p_valo<0.05):
+```{r}
+MatrixBivariantes <- function(x){
+  table <- matrix(nrow=length(x),ncol=length(x)) 
+  table<-as.data.frame(table)
+  colnames(table)<-colnames(x)
+  rownames(table)<-colnames(x)
+  for (i in 1:length(x)) {
+    for (j in 1:length(x)) {
+      a <- colnames(table)[i]
+      b <- colnames(table)[j]
+      formula<-paste('~',a,'+',b)
+      RegFormula <- paste(a,'~',b)
+      RegFormula1 <- paste(b,'~',a)
+      if(i==j){
+        table[i,j]<-"X"
+      }else
+        if(is.factor(x[,i])&&is.factor(x[,j])){ 
+        xtabs<-xtabs(formula,data=x)
+        test <- chisq.test(xtabs)
+        test <- as.list(test)
+        table[i,j]<-round(as.numeric(test[3]),5)
+        table[j,i]<-round(as.numeric(test[3]),5)
+        }else
+          if(is.numeric(x[,i])&&is.numeric(x[,j])){
+                result <-as.list(summary(lm(RegFormula,data = x)))
+                table[i,j] <- round(result$coefficients[2,4],5)
+          }else
+            if(is.factor(x[,i])&&is.numeric(x[,j])){
+              result <-as.list(summary(glm(RegFormula,data =  x,family=binomial("logit"))))
+              table[i,j] <- round(result$coefficients[2,4],5)
+            }else
+             if(is.numeric(x[,i])&&is.factor(x[,j])){
+               result <-as.list(summary(glm(RegFormula1,data =  x,family=binomial("logit"))))
+                # result <-summary(aov(RegFormula1,data =  x))[[1]]["Pr(>F)"][[1]][1]
+               table[i,j] <- round(result$coefficients[2,4],5)
+             }
+      }}
+      return(table)
+}
+dt <- MatrixBivariantes(data)
+```
+```{r,echo=FALSE}
+dt %>%
+  mutate(
+    variables = row.names(.),
+    edad = cell_spec(dt$edad, "html", color = ifelse(dt$grado < 0.05, "red", "blue")),
+    tam = cell_spec(dt$tam, "html", color = ifelse(dt$tam < 0.05, "red", "blue")),
+    grado = cell_spec(dt$grado, "html", color = ifelse(dt$grado < 0.05, "red", "blue")),
+    gang = cell_spec(dt$gang, "html", color = ifelse(dt$gang < 0.05, "red", "blue")),
+    feno = cell_spec(dt$feno, "html", color = ifelse(dt$feno < 0.05, "red", "blue")),
+    quim = cell_spec(dt$quim, "html", color = ifelse(dt$quim < 0.05, "red", "blue")),
+    horm = cell_spec(dt$horm, "html", color = ifelse(dt$horm < 0.05, "red", "blue")),
+    recid = cell_spec(dt$recid, "html", color = ifelse(dt$recid < 0.05, "red", "blue")),
+    edad_cat = cell_spec(dt$edad_cat, "html", color = ifelse(dt$edad_cat < 0.05, "red", "blue"))
+  ) %>%
+  select(variables,colnames(data)) %>%
+  kable("html", escape = F) %>%
+  kable_styling("striped", full_width = F,font_size = 15)
+```
+
+Ahora podemos observar si las variables tiene relacion entre si o no. Los numeros marcados en rojo son  p_valor < 0.05. 
+
+###Ejemplos con p_valor < 0.05:
+-Grado & Fenotipo
+```{r}
+table(data$grado,data$feno)
+ggplot(data,aes(data$feno,data$grado,fill=grado))+geom_bar(stat="identity",position="stack")+ggtitle("Fenotipo & Grado")+theme_economist(base_size=10)
+```
+
+-Numero de ganglios & Quimioterapia
+```{r}
+p<-ggplot(data, aes(x=data$quim,y=data$gang))+geom_boxplot(aes(fill=data$quim))
+p+ facet_wrap(~ data$quim, scales="free")
+```
+
+Vemos como anteriormente con el p_valor como a mayor numero de ganglios mayor probilidad de ser tratado con quimioterapia.
+
+-Fenotipo & Hormonoterapia
+```{r}
+barplot(table(data$feno,data$horm), beside= TRUE, legend.text = TRUE, horiz = T, cex.names = 0.75, las=2, main= "Fenotipo & Hormonoterapia")
+```
+
+Destacamos Luminal A el cual tiene altas probabilidades de sufrir terapia hormonal asi como Luminal B. Por otro lado HER2 enriched y Basal like presentan menos probabilidad de sufrir terapia hormonal.
+
+##Analisis multivariante
+###Funcion para calcular el "accuracy"
+```{r}
+ACC <- function(predict,patron){
+  table <- matrix(ncol = 5,nrow = 1)
+  colnames(table) <- c("TT","TF","FF","FT","ACC")
+  conversion <- lapply(predict,calculo <- function(x){
+                                   if(x>0.5){
+                                      x="SI"
+                                    }else
+                                      x="NO" })
+  conversion <- as.character( conversion)
+  patron <- as.character(patron)
+  TT<-0
+  TF<-0
+  FT<-0
+  FF<-0 
+    for (i in 1:length(predict)) {
+      if(conversion[i]==patron[i]&&patron[i]=="SI"){
+        TT <- TT+1
+      }else if(conversion[i]==patron[i]&&patron[i]=="NO"){
+        TF<-TF+1
+      }else if(conversion[i]=="SI"&&patron[i]=="NO"){
+        FT<-FT+1
+    }else FF<-FF+1
+    }
+  table[1,1] <- TT
+  table[1,2] <- TF
+  table[1,3] <- FF
+  table[1,4] <- FT
+  table[1,5] <-(TT+TF)/(TT+TF+FF+FT)
+  table<-as.data.frame(table)
+  return(table)
+}
+```
+
+Una vez tengamos la funcion para calacular el "accuracy", ya podemos comparar la calidad de las tres modelos obtenidos por diffrentes metodo: **stepAIC**,**Exhaustive search** y **stepACC**.
+
+###StepAIC
+```{r}
+mod.i<- glm((data$recid=="SI")*1.0~.,data,family=binomial("logit"))
+mod.StepAIC<-stepAIC(mod.i,direction="back")
+mod.StepAIC$coefficients
+```
+Obtenemos el modelo por metodo AIC "back", las variables significativos para el recidiva son:
+tam,grado,numero de ganglios y hormonoterapia, con coeficientes como demuestra arriba, el intercept es beta0, donde corta el eje y, los demas numeros son coeficientes correspondientes a cada variable.
+
+Ahora vamos a calcular la precision(accuracy) de este modelo: 
+```{r}
+predictStepAIC <- predict(mod.StepAIC,data,type="response")
+ACC(predictStepAIC,data$recid)
+```
+
+Nos da 85% de precision.
+
+###Exhaustive search
+```{r}
+ExhaustiveSearch <- function(data,name){
+  n<-length(name)
+  seleccion <- combos(n-1)
+  seleccionMatrix<-seleccion$ragged
+  acc <- 0
+  resultado <-  name[seleccionMatrix[1,]]  
+  acc01 <- 0.5
+  soluion <- list()
+     for (i in 1:(2**(n-1)-1)) {
+      variables <- name[seleccionMatrix[i,]]  
+      variablesF <-paste("(data$recid=='SI')*1.0",paste(variables,collapse = "+")
+                                 ,sep = "~")
+      formula <- as.formula(variablesF)
+      modelo <- glm(formula,data,family=binomial("logit"))
+      predict <- predict(modelo,data,type="response")
+      acc <- ACC(predict,data$recid)
+      coefficientes <- modelo$coefficients
+      if(acc$ACC>acc01){
+        resultado <- formula
+        acc01 <- acc$ACC
+        soluion <- append(resultado,acc01)
+      }
+     }
+   return(soluion)
+}
+# quitamos las variables edad y recid porque edad no nos interesa, y recid es el variable dependiente.
+ExhaustiveSearch(data,colnames(data[-c(1,8)]))
+```
+
+Con el modelo obtenido por "Exhaustive search", "accuray"=86%, las vairables significativas son como demostrado arriba: tam,grado,quim.
+
+###stepACC
+```{r}
+stepACC_forward <- function(data,variables){
+    tablaResultado <- list()
+    acc0 <- 0.5
+    result <- "tam"
+  for (i in 1:(length(variables)-1)) {
+      v <- variables[i]
+  for (j in (i+1):(length(variables)-1)) {
+      v <- c(v,variables[j])
+
+      formula0 <-paste("(data$recid=='SI')*1.0",paste(v,collapse = "+")
+                                 ,sep = "~")
+      formula1 <- as.formula(formula0)
+      mod <- glm(formula1,data,family=binomial("logit"))
+      predict <- predict(mod,data,type="response")
+      acc <- (ACC(predict,data$recid))$ACC
+      if(acc>acc0){
+        acc0 <- acc
+        result <- v
+        tablaResultado <- acc
+        tablaResultado <- append(tablaResultado,result)
+      }else
+        v <- result
+    }
+  }
+return(tablaResultado)
+}
+stepACC_forward(data,colnames(data)[-c(1,8)])
+
+```
+
+Con el metodo de stepACC obtenemos un modelo que tiene la accuracy= 86.2% , es igual que el resltado obtenido por el metodo Exhaustive search, son igual de buena de calidad.
+
+###Conclusion
+```{r,echo=FALSE}
+tabla <- data.frame(tam=c("  si","  si","  si"),grado=c("  si","  si","  si"),quim=c("  si","  si","  si"),
+                    feno=c("  si","no","no"),Acc=c("85%","86.2%","86.2%"))
+rownames(tabla) <- c("stepAIC","ExhaustiveSearch","stepACC")
+DT:: datatable(tabla)
+```
+
+El "ExhaustiveSearch" y "stepACC" nos proponen mejor modelos ya que ExhaustiveSearch compara todas las posibles combinaciones de variables y stepACC tambien prueba todas las combinaciones en manera "step forward", ambas metodos cuardan la mejor opcion (la que da mayor accuracy).
+
+Observamos las variables significativos, las tres destacados:**tam**,**grado**,**quim**,
+podemos considerar que son factores muy importantes para la recidiva de cancer, y la variable **feno** causa un poco ruido al modelo ya que la accuracy ha reducido 1.2% por ella.
+
+En conclusion, cuando mayor el tumor, mas alto de grado,el paciente tiene mas probabilidad de recidiva el cancer, el quimioterapia tambien afecta el resultado.
+Por otro lado, el modelo tiene 85% de precision, es fiable.
+
+```
+
+
+```
+
+

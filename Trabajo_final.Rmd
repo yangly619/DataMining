@@ -1,0 +1,326 @@
+---
+title: "Trabajo final"
+author: "Yangyang Li"
+date: "13/6/2019"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+    toc: yes
+    number_sections: yes
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+library(nnet)
+library(rminer)
+library(caret)
+library(pROC)
+library(plotly)
+library(e1071)
+library(FSelector)
+library(rpart)
+library(ggpubr)
+library(gridExtra)
+library(caret)
+library(rminer)
+library(rpart.plot)
+library(foreign)
+library(kableExtra)
+```
+#Introducción
+El objetivo del trabajo es buscar una firma genética que sirva para discriminar pacientes diagnosticados con tumor de próstata. <br>
+Los tumores de próstata se encuentran entre los cánceres más heterogéneos, tanto histológicamente como clínicamente. El análisis de expresión de microarrays se utilizó para determinar si las diferencias biológicas globales subyacen a las características patológicas comunes del cáncer de próstata e identificar genes que podrían anticipar el comportamiento clínico de esta enfermedad. Si bien no se encontró una correlación de la expresión de la edad, se encontraron antígenos séricos específicos de la próstata (PSA) y medidas de invasión local, se identificó un conjunto de genes que se correlacionaron fuertemente con el estado de diferenciación tumoral según lo medido por la puntuación de Gleason. Además, un modelo que utiliza solo datos de expresión génica predijo con precisión el resultado del paciente después de la prostatectomía. Estos resultados apoyan la idea de que el comportamiento clínico del cáncer de próstata está vinculado a las diferencias subyacentes en la expresión de los genes que son detectables en el momento del diagnóstico.
+
+#Metodología
+##Datos
+-136 muestras <br>
+-Expresión génica: utilizando microarrays de oligonucleótidos que contienen sondas para 12,600 genes <br>
+
+##Algoritmos de clasificación 
+-Filtro01: gain.ratio <br>
+-Filtro02: symmetrical.uncertainty <br>
+-Filtro03: chi.squared <br>
+-Wrapper SFS <br>
+
+A partir de las variables seleccionadas con diferentes filtros, utilizaremos el método wrapper SFS (Stepwise Forward Seletion) para busacar la mejor combinación de variables para diferentes modelos (regresión logística, ANN, SVM y árboles de decisión). 
+Se usará el área bajo la curva ROC como métrica de evaluación del rendimiento del modelo.<br> 
+Para la validación interna de todos los modelos usamos 10-fold cross-validation.  
+
+#Procedimiento
+##Cargar datos
+Data set completo: training data + test data
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+data_train <-  read.arff("/Users/yangyangli/Downloads/ProstateCancer/prostate_tumorVSNormal_train.arff")
+data_test <-  read.arff("/Users/yangyangli/Downloads/ProstateCancer/prostate_tumorVSNormal_test.arff")
+data<- rbind(data_train,data_test)
+```
+##Selección de variables
+###FSelector
+En este apartado vamos filtrar 10 variables importantes utilizando 3 diferentes filters:
+
+####gain.ratio
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+weights_01 <- gain.ratio(Class~.,data)
+subset_gainRatio <- cutoff.k(weights_01, 10)
+```
+####symmetrical.uncertainty
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+weights_02 <- symmetrical.uncertainty(Class~.,data)
+subset_sym <- cutoff.k(weights_02, 10)
+```
+####chi.squared
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+weights_03 <- chi.squared(Class~.,data)
+subset_chi <- cutoff.k(weights_03, 10)
+```
+
+El filtro de atributos calcula la relación entre las variables y la clase a través de algunos indicadores estadísticos, y luego selecciona variables importantes de acuerdo con ciertas reglas, pero sin tener en cuenta la relación entre las variables por tanto no siempre puede filtrar las variables correctamente.<br>
+Desde el resultado demostrado abajo, podemos observar los resultado obtenido con el filtro "gain.ratio" y el de "symmetrical.uncertainty" son parecidos ya que ambos algoritmos pertenecen al **Entropy-based filters**, sus algoritmos encuentran pesos de atributos discretos basándose en su correlación con el atributo de clase continua. El filtro de "chi.squared" encuentra pesos de atributos discretos basándose en chi-squared test.
+```{r}
+t <- rbind(subset_gainRatio,subset_sym,subset_chi)
+t[,0:7]
+```
+
+##Stepwise Forward Selection
+El clasificador de wrapper empaquetando algoritmos específicos de clasificación / regresión y usando algunos algoritmos de optimización, elige la mejor combinación de los atributos. Pero el tiempo de ejecución es elevado, especialmente cuando tenemos 12,600 genes en nuestro conjunto de datos, tomaría mucho tiempo en seleccionar la mejor combinacion de todas las combinaciones de genes posibles, por lo que en este trabajos usamos el algoritmo Stepwise Forward realiza la selección de variables entre las variables filtradas de arriba.
+
+###Funciones para ajuste de parámetros para regresión logística, nnet, svm, dt.
+####ANN
+```{r,warning=FALSE}
+addq <- function(x) paste0("`", x, "`") 
+parameter.nnet <- function(d.train,d.test,variables){
+   formula1 <- as.formula( paste("(Class=='Tumor')*1.0",paste(addq(variables),collapse = "+"),sep = "~") )
+       m <- expand.grid(size=seq(1,6,by=1),decay=seq(0,6e-05,by=1e-05))
+       auc <- vector()
+       for (i in 1:dim(m)[1]) {
+        set.seed(5)
+        modelo <-  nnet(formula1,data=d.train,size=m$size[i],maxit=500, decay=m$decay[i],trace=FALSE)
+        predict.test <- predict(modelo,d.test,type="raw")
+        auc.test <- auc(d.test$Class,predict.test)[1]
+        auc <- append(auc,auc.test)
+       } 
+       m$auc <- auc
+  return(m)
+}
+```
+
+####SVM
+```{r}
+parameter.svm <- function(d.train,d.test,variables){
+       m <- expand.grid(cost=seq(100,800,by=100),gamma=10^(-6:-1))
+       formula1 <- as.formula( paste("(Class=='Tumor')*1.0",paste(addq(variables),collapse = "+"),sep = "~") )
+      auc <- vector()
+      for (i in 1:dim(m)[1]) {
+        modelo <-  svm(formula1,data=d.train,cost=m$cost[i],gamma=m$gamma[i],probability=TRUE)
+        predict.test <- predict(modelo,d.test,probability=TRUE)
+        auc.test <- auc(d.test$Class,predict.test)[1]
+        auc <- append(auc,auc.test)
+      }
+   m$auc <- auc
+  return(m )
+}
+```
+
+####DT
+```{r}
+parameter.dt <- function(d.train,d.test,variables){
+      cp <- c(0.01,0.001,0.0001,0.00001)
+      formula1 <- as.formula( paste("(Class=='Tumor')*1.0",paste(addq(variables),collapse = "+"),sep = "~") )
+      auc <- vector()
+      for (i in 1:4) {
+        dt.fit <- rpart(formula1,data=d.train,control=rpart.control(cp=cp[i]))
+        dt.pred <- predict(dt.fit,d.test)
+        auc.test <- auc(d.test$Class,dt.pred)[1]
+        auc <- append(auc,auc.test)
+      }
+      r <- cbind(cp,auc)
+  return( as.data.frame(r) )
+}
+```
+
+###Función para calcular la métrica: AUC
+```{r,warning=FALSE}
+estimaMetrica <- function(d.train,d.test,variables,modelo,parameters){
+  formula <- as.formula( paste("(Class=='Tumor')*1.0",paste(addq(variables),collapse = "+"),sep = "~") )
+      if(modelo=="nnet"){
+        modelo <- nnet(formula,data = d.train,size=parameters$size,maxit=1000,decay=parameters$decay,trace=FALSE)
+        predict.test <- predict(modelo,d.test,type="raw")
+        auc.test <- auc(d.test$Class,predict.test)
+      } 
+      if(modelo=="svm"){
+        modelo <-  svm(formula,data=d.train,size=parameters$cost,gamma=parameters$gamma,probability=TRUE)
+        predict.test <- predict(modelo,d.test,probability=TRUE)
+        auc.test <- auc(d.test$Class,predict.test)
+      } 
+      if(modelo=="dt"){
+        formula.dt <- as.formula(paste("Class",paste(addq(variables),collapse = "+"),sep = "~") )
+        dt.fit <- rpart(formula.dt, data=d.train, control=rpart.control(cp=parameters$cp))
+        dt.pred <- predict(dt.fit,d.test)[,"Tumor"]
+        auc.test <- auc(d.test$Class,dt.pred)
+      }
+     if(modelo=="glm"){
+        modelo <- glm(formula,data=d.train,family = binomial("logit"))
+        predict.test <- predict(modelo,d.test,type="response")
+        auc.test <- auc(d.test$Class,predict.test)
+        }
+      return(auc.test)
+}
+```
+
+###Eval function for wrapper
+Implementación de **eval.fun** para el forward.search(attributes, eval.fun),se emplea 10-fold cross-validation para cada modelo:
+```{r,warning=FALSE}
+k_fold <- function(subset,type){
+  folds <- createFolds(data$Class,k=10)
+  df <- vector()
+  for (i in 1:10) {
+   d.test <- data[folds[[i]],c(subset,"Class")]
+   d.train <- data[-folds[[i]],c(subset,"Class")]
+   
+     if(type == "nnet"){
+       parameter <- parameter.nnet(d.train,d.test,subset)
+       best.pt <- parameter[which.max(parameter$auc),]
+       result <- estimaMetrica(d.train,d.test,subset,"nnet",best.pt)
+       }
+     if(type == "svm"){
+       parameter <- parameter.svm(d.train,d.test,subset)
+       best.pt <- parameter[which.max(parameter$auc),]
+       result <- estimaMetrica(d.train,d.test,subset,"svm",best.pt)}
+     if(type == "dt"){
+       parameter <- parameter.dt(d.train,d.test,subset)
+       best.pt <- parameter[which.max(parameter$auc),]
+       result <- estimaMetrica(d.train,d.test,subset,"dt",best.pt)}
+     if(type =="glm"){
+       result <- estimaMetrica(d.train,d.test,subset,"glm","p")}
+   
+   df <- cbind(df,result)
+  }  
+ return(df)
+}
+wraper.k_fold.nnet <- function(subset){
+   m = k_fold(subset,"nnet")
+   return(mean(m))
+}
+
+wraper.k_fold.svm <- function(subset){
+ m = k_fold(subset,"svm")
+   return(mean(m))
+}
+
+wraper.k_fold.dt <- function(subset){
+ m = k_fold(subset,"dt")
+   return(mean(m))
+}
+wraper.k_fold.glm <- function(subset){
+ m = k_fold(subset,"glm")
+   return(mean(m))
+}
+
+```
+###Resultados de forward.search(attributes, eval.fun)
+####nnet
+```{r,warning=FALSE, message=FALSE}
+subset.nnet01 <- forward.search(subset_gainRatio,wraper.k_fold.nnet)
+subset.nnet02 <- forward.search(subset_sym,wraper.k_fold.nnet)
+subset.nnet03 <- forward.search(subset_chi,wraper.k_fold.nnet)
+```
+
+####SVM
+```{r,warning=FALSE, message=FALSE}
+subset.svm01 <- forward.search(subset_gainRatio,wraper.k_fold.svm)
+subset.svm02 <- forward.search(subset_sym,wraper.k_fold.svm)
+subset.svm03 <- forward.search(subset_chi,wraper.k_fold.svm)
+```
+
+####DT
+```{r,warning=FALSE, message=FALSE }
+subset.dt01 <- forward.search(subset_gainRatio,wraper.k_fold.dt)
+subset.dt02 <- forward.search(subset_sym,wraper.k_fold.dt)
+subset.dt03 <- forward.search(subset_chi,wraper.k_fold.dt)
+```
+
+####glm
+```{r,warning=FALSE, message=FALSE }
+subset.glm01 <- forward.search(subset_gainRatio,wraper.k_fold.glm)
+subset.glm02 <- forward.search(subset_sym,wraper.k_fold.glm)
+subset.glm03 <- forward.search(subset_chi,wraper.k_fold.glm)
+```
+
+####Visualización de resultados:
+```{r,warning=FALSE, message=FALSE}
+nnet <-t(rbind(subset.nnet01,subset.nnet02,subset.nnet03))
+rownames(nnet) <- c("nnet_v1","nnet_v2")
+svm <- t(rbind(subset.svm01,subset.svm02,subset.svm03))
+rownames(svm) <- c("svm_v1","svm_v2","svm_v3","svm_v4")
+dt <- t(rbind(subset.dt01,subset.dt02,subset.dt03))
+rownames(dt) <- c("dt_v1","dt_v2","dt_v3","dt_v4","dt_v5")
+glm <-t(rbind(subset.glm01,subset.glm02,subset.glm03))
+rownames(glm) <- c("glm_v1","glm_v2","glm_v3","glm_v4")
+dt <- rbind(nnet,svm,dt,glm)
+colnames(dt) <- c("gain.ratio","symmetrical.uncertainty","chi.squared")
+dt <- as.data.frame(dt)
+```
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+dt %>%
+  mutate(
+    variables = row.names(.),
+    gain.ratio = cell_spec(dt$gain.ratio, "html", color = ifelse(dt$gain.ratio == "37639_at", "red", "blue")),
+    symmetrical.uncertainty = cell_spec(dt$symmetrical.uncertainty, "html", color = ifelse(dt$symmetrical.uncertainty == "37639_at", "red", "blue")),
+    chi.squared = cell_spec(dt$chi.squared, "html", color = ifelse(dt$chi.squared == "37639_at", "red", "blue"))
+  ) %>%
+  select(variables,colnames(dt)) %>%
+  kable("html", escape = F) %>%
+  kable_styling("striped", full_width = F,font_size = 15)
+```
+
+En el procedimiento anterior, primero hicimos filtración de variables con filters, despues seleccionamos las variables más importantes utilizando el algoritmo "step forward". <br>
+Observamos desde la tabla anterior, las variables resultantes son parecidos para diferentes modelos.(Casi todos los casos han selecionado el atributo **37639_at** como el atributo más importante, y **36666_at**, **41288_at** aparecen más veces también.) Tambien observamos, los dos primeros filters son mas parecidos ya que hemos comentado anteriormente, ellos pertenence al mismo tipo.<br>
+Pero con que combinacion de variables y en que modelo actuar mejor? Acodinuación, comparamos el AUC de cada caso para elegir el mejor modelo.
+
+#Concusión
+```{r,warning=FALSE, message=FALSE}
+auc.nnet01 <- k_fold(subset.nnet01,"nnet")
+auc.nnet02 <-k_fold(subset.nnet02,"nnet")
+auc.nnet03 <-k_fold(subset.nnet03,"nnet")
+
+auc.svm01 <- k_fold(subset.svm01,"svm")
+auc.svm02 <-k_fold(subset.svm02,"svm")
+auc.svm03 <-k_fold(subset.svm03,"svm")
+
+auc.dt01 <- k_fold(subset.dt01,"dt")
+auc.dt02 <- k_fold(subset.dt02,"dt")
+auc.dt03 <- k_fold(subset.dt03,"dt")
+
+auc.glm01 <- k_fold(subset.glm01,"glm")
+auc.glm02 <-k_fold(subset.glm02,"glm")
+auc.glm03 <-k_fold(subset.glm03,"glm")
+```
+
+```{r,warning=FALSE, message=FALSE}
+flag <- factor(rep(c("subset_01","subset_02","subset_03"),each=10))
+
+values_nnet <-c(auc.nnet01,auc.nnet02,auc.nnet03)
+dataset_nnet <- as.data.frame(values_nnet,flag)
+
+values_svm <-c(auc.svm01,auc.svm02,auc.svm03)
+dataset_svm <- as.data.frame(values_svm,flag)
+
+values_dt <-c(auc.dt01,auc.dt02,auc.dt03)
+dataset_dt <- as.data.frame(values_dt,flag)
+
+values_glm <-c(auc.glm01,auc.glm02,auc.glm03)
+dataset_glm <- as.data.frame(values_glm,flag)
+
+boxplot(values_nnet~flag, dataset_nnet,main="nnet")
+boxplot(values_svm~flag, dataset_svm,main="svm")
+boxplot(values_dt~flag, dataset_dt,main="dt")
+boxplot(values_glm~flag, dataset_glm,main="glm")
+```
+
+Al observar todos los boxplot del apartado anterior, observamos que todos los modelos que se use,  obtenia  auc muy alto (cerca de 1), sobre todo el modelo de regresión logística y el de ANN funciona mejor.  Esto también muestra que los filtros y el clasificador wrapper que usamos pueden seleccionar buena combinación de atributos.
+Por otro lado, hay un problema: los valores de AUC es tan alto debido nuestro dataset es peque??o(solo hay 136 muestras), posiblemente habia sobreentrenamiento durante el proceso, para solucionar el problema, podremos emplear  doble validación cruzada, pero en este trabajo, cada muestra tiene 12600 atributos,  requiere mucho tiempo de ejecución. 
+
+

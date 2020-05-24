@@ -1,0 +1,279 @@
+---
+title: "Actividad02"
+author: "Yangyang Li"
+date: "20/3/2019"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+    toc: yes
+    number_sections: yes
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE)
+```
+#Internal Validation and AUC
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+library(rpart)
+library(hier.part)
+library(MASS)
+library(ggplot2)
+library(reshape2)
+library(RColorBrewer)
+library("plyr") 
+library(plotrix)
+library(DT)
+library(kableExtra)
+library(dplyr)
+library(ggthemes)
+library(rminer)
+library(caret)
+library(pROC)
+```
+
+##Cargar de datos y fijar modelo:
+En esta actividad, suponiendo las variabels significados estimados desde el método exhaustivo son los siguientes:**tam**,**gang**,**grado**, y las cuardamos en una variable "variables" para el uso posterior.En los siguientes apartados vamos a realizar la validación interna sobre este modelo mediante distintos métodos y métricas(ACC,AUC).
+
+La función "calculo_ACC  <- function(predict,patron) " es una función que se ha implementado en la actividad anterior para calcular el accuracy,en esta práctica la usamos también, y para ahorrar el espacio del informe, ocultamos la visibilidad de la implementacion de ella.
+```{r}
+data<-read.table(file="/Users/yangyangli/Downloads/datos_icb.txt",sep=" ", dec=".", header=TRUE)
+variables <- c("tam","gang","grado")
+```
+
+```{r,echo=FALSE}
+calculo_ACC <- function(predict,patron){
+  table <- matrix(ncol = 5,nrow = 1)
+  colnames(table) <- c("TT","TF","FF","FT","ACC")
+  conversion <- lapply(predict,calculo <- function(x){
+                                   if(x>0.5){
+                                      x="SI"
+                                    }else
+                                      x="NO" })
+  conversion <- as.character( conversion)
+  patron <- as.character(patron)
+  TT<-0
+  TF<-0
+  FT<-0
+  FF<-0 
+    for (i in 1:length(predict)) {
+      if(conversion[i]==patron[i]&&patron[i]=="SI"){
+        TT <- TT+1
+      }else if(conversion[i]==patron[i]&&patron[i]=="NO"){
+        TF<-TF+1
+      }else if(conversion[i]=="SI"&&patron[i]=="NO"){
+        FT<-FT+1
+    }else FF<-FF+1
+    }
+  return((TT+TF)/(TT+TF+FF+FT))
+}
+```
+##Validación interna
+###Hold out 
+En este apartado implementamos una función se llama **hold.out**, esta función se basa en la división del conjunto de datos en dos subconjuntos, uno para entrenamiento/estimación del modelo y otro de test para calcular la capacidad de generalización del mismo.
+Para esta función le pasamos el conjunto de datos, variables significativos y porcentaje como parámetros, entrenamos el modelo con el conjunto de datos de entrenamiento(**d.train**), despues usamos los valores de  **ACC** y de **AUC** como métrica de la calidad de modelo.
+```{r}
+#la "estimaMetrica" corresponde a un parte de código repetida en el hol.out y el k-fold
+# calculo de acc y auc, se usa para la función de hold.out y  de k_fold 
+estimaMetrica <- function(d.train,d.test,variables){
+  formula <-as.formula( paste("(d.train$recid=='SI')*1.0",paste(variables,collapse = "+")
+                                 ,sep = "~") )
+      modelo <- glm(formula,data=d.train,family = binomial("logit"))
+      predict.train <- predict(modelo,d.train,type="response")
+      predict.test <- predict(modelo,d.test,type="response")
+      acc.train <- calculo_ACC(predict.train,d.train$recid)
+      acc.test <- calculo_ACC(predict.test,d.test$recid)
+      auc.train <- auc(d.train$recid,predict.train)
+      auc.test <- auc(d.test$recid,predict.test)
+      return(c(acc.train,acc.test,auc.train,auc.test))
+}
+#hold.out 
+hold.out <- function(data,variables,p,tipo){
+  if(tipo=="estratificada"){
+      index <- holdout(ratio=p,data$recid,mode = "stratified")
+      d.train <-  data[index$tr,]
+      d.test <- data[index$ts,]
+      }
+   if(tipo=="sample"){
+      index <- sample(nrow(data), p*nrow(data)) 
+      d.train <- data[index,]
+      d.test <- data[-index,]
+   }
+      valor <-  estimaMetrica(d.train ,d.test ,variables )
+      return(valor)
+}
+```
+En la implementación de esta función se ha dividido el conjunto de datos de dos formas, una usando la función **sample()** y otro con la función **holdout (a stratified holdout is applied , the proportions of the classes are the same for each set)**, la función **sample** nos da una distribución aleatoria no estandar, es posible nos devuelve una distribución no balanceada, por tanto, el acc calculado no tendrá significado.<br>
+
+Resultados:
+```{r}
+estratificada <- hold.out(data,variables,0.75,"estratificada")
+sample <- hold.out(data,variables,0.75,"sample")
+result <- data.frame(metrica=c("acc.train","acc.test","auc.train","auc.test"))
+result <- cbind(result, estratificada,sample)
+result
+```
+
+Podemos observar el valor de ACC y de AUC para el d.train es más alto que el d.test en ambos casos, es porque el modelo se entrenó con el conjunto d.train,en otra palabra, se aprendió bien un conjunto de datos conocido, y el d.test es un conjunto de datos de "futuro", por tanto , la precisión es más alto para el d.train que el d.test.<br>
+A través del valor del AUC obtenido, podemos saber que la tasa de predicción del modelo es de alrededor del 70 al 80 por ciento.<br>
+La razón por la cual AUC se usa como un criterio de evaluación modelo es porque AUC puede hacer una evaluación razonable del clasificador en caso de desequilibrio de la muestra.
+Por ejemplo, cuando la muestra está muy desequilibrada y solo tiene un 0,1% no recid, si usamos ACC, se predecirá que todas las muestras serán positivas y obtendremos una precisión del 99,9%.Sin embargo, si usamos AUC, TPRate y FPRate son ambos 1, entonces el AUC es solo 0.5, lo que evita el problema causado por la desequilibrio de la muestra.
+
+####Ejmplo de una curva roc
+La curva roc de d.test esta debajo de la curva de d.train, 
+confirmamos otra vez la conclusión de arriba.
+```{r,echo=FALSE}
+ index <- holdout(ratio=0.75,data$recid,mode = "stratified")
+      d.train <-  data[index$tr,]
+      d.test <- data[index$ts,]
+      modelo <- glm((d.train$recid=='SI')*1.0~tam+gang+grado,data=d.train,family = binomial("logit"))
+predict.train <- predict(modelo,d.train,type="response")
+predict.test <- predict(modelo,d.test,type="response")
+ 
+roc.train <- roc(d.train$recid,predict.train)
+roc.test <- roc(d.test$recid,predict.test)
+
+plot(roc.train, print.auc=TRUE, auc.polygon=TRUE, grid=c(0.1, 0.2), max.auc.polygon=TRUE,
+auc.polygon.col="skyblue",col='blue')
+plot.roc(roc.test, add=TRUE, col="red") 
+legend("topleft",inset=.05,title = "Roc curves",c("train","test"),
+    lty = c(1,2),pch = c(15,17),  col=c("blue","red"),cex=1)
+```
+
+### Repeat hold out
+El método de HoldOut puede presentar dos claros problemas: <br>
+1. La reserva de datos para test reduce el número de casos usados para training.<br>
+2. Una división aleatoria "desafortunada" del conjunto de datos puede conducir a una estimación pesimista del ACC. Para solucionar este problema se utilizan técnicas de "resampling", que usadas sobre HoldOut permiten implementar el método conocido como "Repeated HoldOut".
+```{r}
+#implementación
+repeat.Holdout <- function(datas,variables,n,percent,tipo){
+  rep <- replicate(n,hold.out(datas,variables,percent,tipo))
+  m.train.acc <-round(mean(rep[1,]),3)
+  m.test.acc <- round(mean(rep[2,]),3)
+  sd.train.acc <- round(sd(rep[1,]),4)
+  sd.test.acc <- round(sd(rep[2,]),4)
+  m.train.auc <- round(mean(rep[3,]),3)
+  m.test.auc <- round(mean(rep[4,]),3)
+  return(c(m.train.acc,m.test.acc,sd.train.acc,sd.test.acc,m.train.auc,m.test.auc))
+}
+```
+Repite 30 veces el hold.out:
+```{r}
+rep.hold.estrf <- repeat.Holdout(data,variables,30,0.75,"stratified")
+rep.hold.sample <- repeat.Holdout(data,variables,30,0.75,"sample")
+rep.hold.estrf <- rep.hold.estrf[-c(3,4)]
+rep.hold.sample <- rep.hold.sample[-c(3,4)]
+names(rep.hold.estrf) <-c("m.train.acc","m.test.acc","m.train.auc","m.test.auc")
+rbind(rep.hold.estrf,rep.hold.sample)
+```
+
+Con 30 veces de repeticiones obtenemos buen resultados en ACC y AUC, y los valores son parecidos para ambos manera de divición de datos.
+¿Pero con cuantas repeticiones nos podrá dar un resultado fiable? En el siguiente apartado vamos a investigarla.
+
+###¿Cómo el número de repeticiones influye el reusltado ?
+```{r}
+num.repeat <- seq(10,1000,by=50)
+
+list.repeticiones <- lapply(num.repeat, function(x){
+    repeat.Holdout(data,variables,x,0.75,"sample")})
+
+      l.train.acc<- vector()
+      l.test.acc <- vector()
+      l.sd.train.acc <- vector()
+      l.sd.test.acc <- vector()
+      l.train.auc<- vector()
+      l.test.auc <- vector()
+    for (i in 1:length(list.repeticiones)) {
+      #las medias de acc con diferentes numero de repeticiones
+      l.train.acc <-append(l.train.acc,list.repeticiones[[i]][1])
+      l.test.acc<- append(l.test.acc,list.repeticiones[[i]][2])
+      #las desviaciones con diferentes numero de repeticiones
+      l.sd.train.acc <-append(l.sd.train.acc,list.repeticiones[[i]][3])
+      l.sd.test.acc<- append(l.sd.test.acc,list.repeticiones[[i]][4])
+      #las medias de auc con diferentes numero de repeticiones
+      l.train.auc <-append(l.train.auc,list.repeticiones[[i]][5])
+      l.test.auc<- append(l.test.auc,list.repeticiones[[i]][6])
+    }
+```
+```{r,echo=FALSE}
+t <- as.data.frame(cbind(num.repeat,l.train.acc,l.test.acc,l.sd.train.acc,l.sd.test.acc,l.train.auc,l.test.auc))
+DT::datatable(t,rownames=FALSE,caption = htmltools::tags$caption(
+    style = 'caption-side: bottom; text-align: center;',
+     htmltools::em('Resultados con diferentes numero de repeticion.')
+  ))
+```
+
+####Análisis de reusltados:
+```{r}
+ggplot(data = t, aes(x = t$num.repeat)) + geom_line(aes(y = t$l.train.acc, colour = "media.train.acc"))+
+geom_line(aes(y = t$l.test.acc, colour = "media.test.acc"))+ xlab('numero de repeticiones')+ylab('Valor')+labs(title = "Evolucion de las metricas cuando aumenta las veces de repeticion")+geom_line(aes(y = t$l.train.auc, colour = "media.train.auc"))+geom_line(aes(y = t$l.test.auc, colour = "media.test.auc")) + annotate("text", x=0, y=0.855, label="ACC",colour="blue",size=5)+annotate("text", x=0, y=0.778, label="AUC",colour="blue",size=5)
+```
+
+Observamos en la gráfica de arriba,  los valores de ACC y AUC al final se quedan estables,eso significa cuando mayor número repita, mayor fiabilidad el promedio de ACC y de AUC.<br>
+También podemos confirmar otra vez, las métricas del conjunto de entrenamiento son más alto que el conjunto de test.
+```{r}
+ggplot(t, aes(t$num.repeat))+ geom_point(aes( y=t$l.sd.train.acc,colour="SD.train"))+geom_point(aes( y=t$l.sd.test.acc,colour="SD.test"))+
+xlab('numero de repeticiones')+ylab('Desviacion')
+```
+
+Igual como los valores de las métricas ACC y AUC, las desviaciones de ACC se estable con el aumento del número de repeticiones. 
+
+###El teorema del límite central
+El teorema central del límite (TCL) es una teoría estadística que establece que, dada una muestra suficientemente grande de la población, la distribución de las medias muestrales seguirá una distribución normal.<br>
+A continuación vamos a demostrar el teorema con repeat.Holdout, el tamaño de muestra es el número de repetición, en teoría cuando mayor la muestra es, la distribución se acerca más normalizada.(Usamos el AUC del conjunto de test como ejemplo)
+
+```{r}
+#tamaño de muestra :10
+teorema1 <- replicate(50,repeat.Holdout(data,variables,10,0.75,"sample"))
+#tamaño de muestra :100
+teorema2 <- replicate(50,repeat.Holdout(data,variables,100,0.75,"sample"))
+#extreamos los datos interesados y las cuardamos en un dataframe
+t1 <- as.data.frame(t(teorema1))
+t2 <- as.data.frame(t(teorema2))
+comparaHist <-as.data.frame( cbind(t1[,6],t2[,6]) )
+colnames(comparaHist) <- c("AUC.test1","AUC.test2")
+#calculo de p_value para ver si los datos estan en una distribución normal
+shapiro1 <-paste("p_value: ",round(shapiro.test(comparaHist$AUC.test1)$p.value,3))
+shapiro2 <-paste("p_value: ",round( shapiro.test(comparaHist$AUC.test2)$p.value,3))
+```
+####Histogramas y p_valor de diferentes tamaño de muestra
+```{r}
+ggplot(comparaHist,aes(x=comparaHist$AUC.test1,fill="muestra.menor")) + 
+geom_histogram(position = 'identity',alpha=0.5,aes(x=comparaHist$AUC.test1) 
+               +stat_density(geom = 'line',position = 'identity'))+geom_histogram(position = 'identity',alpha=0.5,aes(x=comparaHist$AUC.test2,fill="muestra.mayor") )+xlab("AUC")+
+stat_function(fun = dnorm(1, mean(comparaHist$AUC.test2), sd = sd(comparaHist$AUC.test2)), colour = "red")+ annotate("text", x=0.75, y=2.2, label=shapiro1,colour="blue",size=5) + annotate("text", x=0.78, y=10, label=shapiro2,colour="red",size=5)+labs(title = "Central limit theorem")
+```
+
+Observamos en la gráfica de arriba, las medias de ambas muestras aleatorias son normales, los p_values de ambos casos son mayor de 0.05, afirman el hipotesis nulo(normal).
+
+###K-fold cross validation
+```{r}
+k_fold <- function(data,k,variables){
+ folds <- createFolds(data$recid,k=k)
+r <- vector()
+  for (i in 1:k) {
+   d.test <- data[folds[[i]],]
+   d.train <- data[-folds[[i]],]
+   result <- estimaMetrica(d.train ,d.test ,variables)
+   r <- cbind(r,result)
+  }
+  x<- c(round(mean(r[1,]),3),round(mean(r[2,]),3),round(mean(r[3,]),3),round(mean(r[4,]),3))
+  names(x) <- c("m.train.acc","m.test.acc","m.train.auc","m.test.auc")
+return(x)
+}
+
+k.fold <- k_fold(data,10,variables )
+k.fold
+```
+
+##Conclusión
+###Compara repeat.holdout y k_fold
+```{r}
+rbind(rep.hold.sample,k.fold)
+```
+
+Los resultados obtenidos desde ambos métodos son muy parecidos, ambos tienen buenas tasas predictivas en ACC y AUC, aunque para un modelo predictivo esperamos que el AUC sea más alto (al menos 0.9).<br>
+Para garantizar la fiabilidad de los resultados de hold.out debe repetir muchos veces, consumirá más tiempo en procesar.Sin embargo el k.fold es una validación cruzada, normalmente solo necesitamos calcular 10 veces y calcular el valor promedio.
